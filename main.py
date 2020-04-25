@@ -18,7 +18,7 @@ roles = [x.lower() for x in list(ROLE_ID.keys())]
 channel_cooldown = {}
 COOLDOWN = 30
 
-self.db = sqlalchemy.create_engine(
+db = sqlalchemy.create_engine(
     sqlalchemy.engine.url.URL(
         drivername=DB['DRIVER_NAME'],
         username=DB['USER_NAME'],
@@ -28,7 +28,7 @@ self.db = sqlalchemy.create_engine(
     )
 )
 
-with self.db.connect() as conn:
+with db.connect() as conn:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS teams ("
         "team_id SMALLINT AUTO_INCREMENT PRIMARY KEY, "
