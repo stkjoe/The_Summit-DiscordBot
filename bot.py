@@ -16,7 +16,7 @@ if debug:
 
 with open(filename) as json_file:
     data = json.load(json_file)
-    TOKENS = data['TOKEN']
+    TOKEN = data['TOKEN']
     RDS = data['RDS']
     IDS = data['ID']
     SITE = data['SITE']
@@ -91,13 +91,13 @@ class Client(discord.Client):
                             roles.append(add_role(message, ID['ROLE']['CAPTAIN'], "Captain"))
                         if participant:
                             roles.append(add_role(message, ID['ROLE']['PARTICIPANT'], "Participant"))
-                        resp = discord.Embed(
+                        resp = build_embed(
                             title="Success",
                             description="The following roles have been added:\n\n{}".format("\n".join(roles)),
                             color=0x80ff00
-                            )
+                        )
                     else:
-                        resp = discord.Embed(
+                        resp = build_embed(
                             title="Failure",
                             description="Please make sure you are entering the code correctly.",
                             color=0xff0000
@@ -105,7 +105,11 @@ class Client(discord.Client):
                     cursor.close()
                     conn.close()
                 else:
-                    resp = discord.Embed(title="Failure", description="Please make sure you are entering the code correctly.", color=0xff0000)
+                    resp = build_embed(
+                        title="Failure",
+                        description="Please make sure you are entering the code correctly.",
+                        color=0xff0000
+                        )
             await message.channel.delete()
             temp = await message.channel.send(embed=resp)
             await temp.channel.delete(delay=8)
@@ -152,12 +156,12 @@ class Client(discord.Client):
                     )
                     send_embed(message, resp, "site")
                 elif text_message.startswith("!live"):
-                    twitch_html = requests.get("https://api.twitch.tv/kraken/streams/The_Summit_ORG?client_id={}".format(twitch_token))
+                    twitch_html = requests.get("https://api.twitch.tv/kraken/streams/{}?client_id={}".format(SITE['TWITCH'].split("twitch.tv/")[1], TOKEN['TWITCH']))
                     twitch = json.loads(twitch_html.content)
                     if twitch["stream"] is not None:
                         resp = build_embed(
                             title="The Summit ORG is LIVE",
-                            description="https://www.twitch.tv/The_Summit_ORG",
+                            description=SITE['TWITCH'],
                             color=0x6441a5,
                             thumbnail="https://i.imgur.com/7QEx1ny.png"
                         )
@@ -168,4 +172,4 @@ class Client(discord.Client):
                     send_embed(message, resp, "live")
 
 client = Client()
-client.run(discord_token)
+client.run(TOKEN['DISCORD'])
