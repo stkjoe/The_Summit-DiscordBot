@@ -15,13 +15,13 @@ macOS/Linux: `python3 -m venv env`
 Windows: `py -m venv env`
 4. Activate the virtual environment.
 macOS/Linux: `source env/bin/activate`
-Windows: `.\env\Scripts\activate`
+Windows: `\env\Scripts\activate`
 Note: You can deactivate the virtual environment with `deactivate`
 5. Install the requirements for the repository
 macOS/Linux: `python3 -m pip install -r requirements.txt`
 Windows: `py -m pip install -r requirements.txt`
-6. Open `bot.py` in a text editor and ensure you have debug set to `True`
-
-+ Ensure you have `dev.txt` in the same folder (Contact the repository owner for these files)
+6. Run with the following command.
+macOS/Linux: `python3 bot.py`
+Windows: `py bot.py`
 ---
 This project is not affiliated with [osu!](https:https://osu.ppy.sh/)

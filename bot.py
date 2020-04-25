@@ -1,43 +1,83 @@
 import discord
-from discord.ext import commands
 from discord.utils import get
-import MySQLdb
+import sqlalchemy
 from datetime import datetime, timedelta
 import os
 import requests
 import json
 
-# If true, will read the an alternative text file for tokens
-debug=False
-
-filename = 'settings.txt'
-if debug:
-    filename = 'dev.txt'
-
-with open(filename) as json_file:
+with open('secret.txt') as json_file:
     data = json.load(json_file)
     TOKEN = data['TOKEN']
-    RDS = data['RDS']
-    IDS = data['ID']
+    ROLE_ID = data['ID']['ROLE']
     SITE = data['SITE']
+    DB = data['DB']
+
+    
+roles = [x.lower() for x in list(ROLE_ID.keys())]
+channel_cooldown = {}
+COOLDOWN = 30
+
+self.db = sqlalchemy.create_engine(
+    sqlalchemy.engine.url.URL(
+        drivername=DB['DRIVER_NAME'],
+        username=DB['USER_NAME'],
+        password=DB['PASSWORD'],
+        database=DB['DATABASE'],
+        query={"unix_socket": "/cloudsql/{}".format(DB['CONNECTION_NAME'])},
+    )
+)
+
+with self.db.connect() as conn:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teams ("
+        "team_id SMALLINT AUTO_INCREMENT PRIMARY KEY, "
+        "team_name VARCHAR(30) NOT NULL, "
+        "team_tag VARCHAR(3) NOT NULL, "
+        ""
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users ("
+        "discord_id BIGINT, "
+        "osu_id INT NOT NULL, "
+        "team_id SMALLINT, "
+        "FOREIGN KEY (team_id) REFERENCES teams(team_id)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS roles ("
+        "participant BOOLEAN DEFAULT false, "
+        "captain BOOLEAN DEFAULT false, "
+        "song_selector BOOLEAN DEFAULT false, "
+        "commentator BOOLEAN DEFAULT false, "
+        "judge BOOLEAN DEFAULT false, "
+        "chat_moderator BOOLEAN DEFAULT false, "
+        "website_maintainer BOOLEAN DEFAULT false, "
+        "graphics_designer BOOLEAN DEFAULT false, "
+        "staff BOOLEAN DEFAULT false, "
+        "organizer BOOLEAN DEFAULT false, "
+        "discord_id BIGINT, "
+        "FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE"
+    )
 
 class Client(discord.Client):
-    channel_cooldowns = {}
-    COOLDOWN = 30
 
-    def on_cooldown(message, command):
+    def on_cooldown(self, message, command):
         try:
             last_time = channel_cooldown[message.channel.id][command]
         except KeyError:
-            channel_cooldown[message.channel.id][command] = datetime.now() - datetime.timedelta(seconds=COOLDOWN * 2)
+            try:
+                channel_cooldown[message.channel.id][command] = datetime.now()
+            except KeyError:
+                channel_cooldown[message.channel.id] = {}
+                channel_cooldown[message.channel.id][command] = datetime.now()
             return False
-        last_time_since = datetime.now() - last_time
+        last_time_since = (datetime.now() - last_time).total_seconds()
         if last_time_since <= COOLDOWN:
             channel_cooldown[message.channel.id][command] = datetime.now()
             return last_time_since
         return False
 
-    def build_embed(title="", description="", color=0xffffff, thumbnail=""):
+    def build_embed(self, title="", description="", color=0xffffff, thumbnail=""):
         embed = discord.Embed(
             title=title,
             description=description,
@@ -47,129 +87,98 @@ class Client(discord.Client):
             embed.set_thumbnail(url=thumbnail)
         return embed
 
-    async def send_embed(message, content, command):
-        seconds = on_cooldown(message, command)
+    async def send_embed(self, message, content, command):
+        seconds = self.on_cooldown(message, command)
         if seconds:
             resp = discord.Embed(
                 title="Command is on cooldown!",
-                description="{} seconds remain".format(seconds),
+                description="{} seconds remain".format(int(30 - seconds)),
                 color=0xff0000
             )
-            await message.channel.send(embed=resp)
+            temp = await message.channel.send(embed=resp, delete_after=3)
         else:
             await message.channel.send(embed=content)
 
-    async def add_role(message, role_id, desc):
-        role = get(message.guild.roles, id=role_id)
+    async def add_role(self, member, role_id):
+        role = get(member.guild.roles, id=role_id)
         await message.author.add_roles(role)
-        return desc
 
-    async def on_message(message):
+    async def on_member_join(self, member):
+        with db.connect() as conn:
+            user_roles = conn.execute("SELECT {} FROM roles WHERE discord_id={}".format(", ".join(roles), member.id)).fetchone()
+            for role in roles:
+                if user_roles[role]:
+                    await add_role(member, ROLE_ID[role.upper()])
+
+    async def on_message(self, message):
         if message.author.bot:
             # Ignore own messages
             return
-        if message.channel.id == base_camp_id:
-            # Reads the base_camp channel for codes
-            if message.startswith("sumt"):
-                conn = MySQLdb.connect(
-                    host=RDS['DEFAULT']['RDS_HOSTNAME'],
-                    port=int(RDS['DEFAULT']['RDS_PORT']),
-                    user=RDS['DEFAULT']['RDS_USERNAME'],
-                    passwd=RDS['DEFAULT']['RDS_PASSWORD'],
-                    db=RDS['DEFAULT']['RDS_DB_NAME'],
-                )
-                if conn.is_connected():
-                    cursor = conn.cursor()
-                    query = ("SELECT participant, captain FROM role_Table WHERE code=%s")
-                    cursor.execute(query, message.content)
-                    result = cursor.fetchone()
-                    if result:
-                        roles = []
-                        participant = bool(result[0])
-                        captain = bool(result[1])
-                        if captain:
-                            roles.append(add_role(message, ID['ROLE']['CAPTAIN'], "Captain"))
-                        if participant:
-                            roles.append(add_role(message, ID['ROLE']['PARTICIPANT'], "Participant"))
-                        resp = build_embed(
-                            title="Success",
-                            description="The following roles have been added:\n\n{}".format("\n".join(roles)),
-                            color=0x80ff00
-                        )
-                    else:
-                        resp = build_embed(
-                            title="Failure",
-                            description="Please make sure you are entering the code correctly.",
-                            color=0xff0000
-                            )
-                    cursor.close()
-                    conn.close()
-                else:
-                    resp = build_embed(
-                        title="Failure",
-                        description="Please make sure you are entering the code correctly.",
-                        color=0xff0000
-                        )
-            await message.channel.delete()
-            temp = await message.channel.send(embed=resp)
-            await temp.channel.delete(delay=8)
-            
-        else:
+        if message.content.startswith("!"):
             text_message = message.content.lower()
-            if message.content.startswith("!"):
-                if text_message.startswith("!help"):
-                    resp = build_embed(
-                        title="Help",
-                        description="\n".join(
-                            [
-                                "**General**",
-                                "``!twitch``: Displays the contest Twitch link",
-                                "``!youtube``: Displays the contest YouTube link",
-                                "``!site`` / ``!website``: Displays the contest Website link",
-                                "``!live``: Check if the contest Twitch stream is live"
-                            ]
-                        ),
-                        color=0xffffff,
-                    )
-                    send_embed(message, resp, "help")
-                elif text_message.startswith("!twitch"):
-                    resp = build_embed(
-                        title="Twitch Channel",
+            if text_message.startswith("!help"):
+                resp = self.build_embed(
+                    title="Help",
+                    description="\n".join(
+                        [
+                            "**General**",
+                            "``!live``: Check if the contest Twitch stream is live",
+                            "``!site`` / ``!website``: Displays the contest Website link",
+                            "``!twitch``: Displays the contest Twitch link",
+                            "``!youtube``: Displays the contest YouTube link",
+                            "``!twitter``: Displays the contest Twitter link"
+                        ]
+                    ),
+                    color=0xffffff,
+                )
+                await self.send_embed(message, resp, "help")
+            elif text_message.startswith("!live"):
+                twitch_html = requests.get("https://api.twitch.tv/kraken/streams/{}?client_id={}".format(SITE['TWITCH'].split("twitch.tv/")[1], TOKEN['TWITCH']))
+                twitch = json.loads(twitch_html.content)
+                try:
+                    twitch["stream"]
+                    resp = self.build_embed(
+                        title="The Summit ORG is LIVE",
                         description=SITE['TWITCH'],
                         color=0x6441a5,
-                        thumbnail="https://i.imgur.com/7QEx1ny.png" #TODO: change image
+                        thumbnail="https://i.imgur.com/7QEx1ny.png"
                     )
-                    send_embed(message, resp, "twitch")
-                elif text_message.startswith("!youtube"):
-                    resp = build_embed(
-                        title="YouTube Channel",
-                        description=SITE['YOUTUBE'], #TODO: add youtube domain
-                        color=0xc4302b,
-                        thumbnail="https://i.imgur.com/eyLvJEo.png"
+                except KeyError:
+                    resp = self.build_embed(
+                        title="The Summit ORG is NOT Live"
                     )
-                    send_embed(message, resp, "youtube")
-                elif text_message.startswith("!site") or text_message.startswith("!website"):
-                    resp = build_embed(
-                        title="The Summit Website",
-                        description=SITE['WEBSITE'],
-                        thumbnail="" #TODO: change image to official one
-                    )
-                    send_embed(message, resp, "site")
-                elif text_message.startswith("!live"):
-                    twitch_html = requests.get("https://api.twitch.tv/kraken/streams/{}?client_id={}".format(SITE['TWITCH'].split("twitch.tv/")[1], TOKEN['TWITCH']))
-                    twitch = json.loads(twitch_html.content)
-                    if twitch["stream"] is not None:
-                        resp = build_embed(
-                            title="The Summit ORG is LIVE",
-                            description=SITE['TWITCH'],
-                            color=0x6441a5,
-                            thumbnail="https://i.imgur.com/7QEx1ny.png"
-                        )
-                    else:
-                        resp = build_embed(
-                            title="The Summit ORG is NOT Live"
-                        )
-                    send_embed(message, resp, "live")
+                await self.send_embed(message, resp, "live")
+            elif text_message.startswith("!site") or text_message.startswith("!website"):
+                resp = self.build_embed(
+                    title="The Summit Website",
+                    description=SITE['WEBSITE'],
+                    thumbnail="" #TODO: change image to official one
+                )
+                await self.send_embed(message, resp, "site")
+            elif text_message.startswith("!twitch"):
+                resp = self.build_embed(
+                    title="Twitch Channel",
+                    description=SITE['TWITCH'],
+                    color=0x6441a5,
+                    thumbnail="https://i.imgur.com/7QEx1ny.png"
+                )
+                await self.send_embed(message, resp, "twitch")
+            elif text_message.startswith("!youtube"):
+                resp = self.build_embed(
+                    title="YouTube Channel",
+                    description=SITE['YOUTUBE'], #TODO: add youtube domain
+                    color=0xc4302b,
+                    thumbnail="https://i.imgur.com/eyLvJEo.png"
+                )
+                await self.send_embed(message, resp, "youtube")
+            elif text_message.startswith("!twitter"):
+                resp = self.build_embed(
+                    title="Twitter Profile",
+                    description=SITE['TWITTER'],
+                    color=0xc4302b,
+                    thumbnail="https://i.imgur.com/eyLvJEo.png" #TODO: change to twitter logo
+                )
+                await self.send_embed(message, resp, "twitter")
 
 client = Client()
 client.run(TOKEN['DISCORD'])
