@@ -214,17 +214,23 @@ class Client(discord.Client):
                         else:
                             resp = self.build_embed(
                                 title="Roles Update Failure",
-                                description="There was an issue updating the roles for {}.\nContact Rizen immediately",
+                                description="There is no website user associated with this user.\nIf this is an error, contact Rizen",
                                 color=0xff0000
                             )
-                        await message.channel.send(embed=resp)
-                    else:
+                    elif len(message.mentions) > 1:
                         resp = self.build_embed(
                             title="Roles Update Failure",
                             description="You may only include one mention in the message.\nUsage: ``!roles @user``",
                             color=0xff0000
                         )
-                        await message.channel.send(embed=resp)
+                    elif len(message.mentions) == 0:
+                        resp = self.build_embed(
+                            title="Roles Update Failure",
+                            description="You must include one mention in the message.\nUsage: ``!roles @user``",
+                            color=0xff0000
+                        )
+                    await message.channel.send(embed=resp)
+
 
 client = Client()
 client.run(TOKEN['DISCORD'])
