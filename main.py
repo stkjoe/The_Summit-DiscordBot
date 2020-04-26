@@ -1,6 +1,6 @@
 import discord
 from discord.utils import get
-import sqlalchemy
+import MySQLdb
 from datetime import datetime, timedelta
 import os
 import requests
@@ -13,53 +13,46 @@ with open('secret.txt') as json_file:
     SITE = data['SITE']
     DB = data['DB']
 
-    
 roles = [x.lower() for x in list(ROLE_ID.keys())]
 channel_cooldown = {}
 COOLDOWN = 30
 
-db = sqlalchemy.create_engine(
-    sqlalchemy.engine.url.URL(
-        drivername=DB['DRIVER_NAME'],
-        username=DB['USER_NAME'],
-        password=DB['PASSWORD'],
-        database=DB['DATABASE'],
-        query={"unix_socket": "/cloudsql/{}".format(DB['CONNECTION_NAME'])},
-    )
-)
-
-with db.connect() as conn:
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS teams ("
-        "team_id SMALLINT AUTO_INCREMENT PRIMARY KEY, "
-        "team_name VARCHAR(30) NOT NULL, "
-        "team_tag VARCHAR(3) NOT NULL, "
-        ""
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users ("
-        "discord_id BIGINT, "
-        "osu_id INT NOT NULL, "
-        "team_id SMALLINT, "
-        "FOREIGN KEY (team_id) REFERENCES teams(team_id)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS roles ("
-        "participant BOOLEAN DEFAULT false, "
-        "captain BOOLEAN DEFAULT false, "
-        "song_selector BOOLEAN DEFAULT false, "
-        "commentator BOOLEAN DEFAULT false, "
-        "judge BOOLEAN DEFAULT false, "
-        "chat_moderator BOOLEAN DEFAULT false, "
-        "website_maintainer BOOLEAN DEFAULT false, "
-        "graphics_designer BOOLEAN DEFAULT false, "
-        "staff BOOLEAN DEFAULT false, "
-        "organizer BOOLEAN DEFAULT false, "
-        "discord_id BIGINT, "
-        "FOREIGN KEY (discord_id) REFERENCES users(discord_id) ON DELETE CASCADE"
-    )
-
 class Client(discord.Client):
+
+    async def on_ready(self):
+        db = self.get_db()
+        cur = db.cursor()
+        cur.execute("""CREATE TABLE IF NOT EXISTS teams (
+            team_name VARCHAR(30) NOT NULL,
+            team_tag VARCHAR(3) PRIMARY KEY,
+            eliminated BOOLEAN DEFAULT false)"""
+        )
+        cur.execute("""CREATE TABLE IF NOT EXISTS users (
+            discord_id BIGINT DEFAULT -1,
+            osu_id INT PRIMARY KEY,
+            team_tag VARCHAR(3) DEFAULT NULL,
+            participant BOOLEAN DEFAULT false,
+            captain BOOLEAN DEFAULT false,
+            song_selector BOOLEAN DEFAULT false,
+            commentator BOOLEAN DEFAULT false,
+            judge BOOLEAN DEFAULT false,
+            chat_moderator BOOLEAN DEFAULT false,
+            website_maintainer BOOLEAN DEFAULT false,
+            graphics_designer BOOLEAN DEFAULT false,
+            staff BOOLEAN DEFAULT false,
+            organiser BOOLEAN DEFAULT false,
+            FOREIGN KEY (team_tag) REFERENCES teams(team_tag))"""
+        )
+        db.close()
+
+    def get_db(self):
+        db = MySQLdb.connect(
+            host=DB['HOST'],
+            user=DB['USER_NAME'],
+            passwd=DB['PASSWORD'],
+            db=DB['DATABASE']
+        )
+        return db
 
     def on_cooldown(self, message, command):
         try:
@@ -101,14 +94,35 @@ class Client(discord.Client):
 
     async def add_role(self, member, role_id):
         role = get(member.guild.roles, id=role_id)
-        await message.author.add_roles(role)
+        await member.add_roles(role)
+        return role.name
 
-    async def on_member_join(self, member):
-        with db.connect() as conn:
-            user_roles = conn.execute("SELECT {} FROM roles WHERE discord_id={}".format(", ".join(roles), member.id)).fetchone()
-            for role in roles:
-                if user_roles[role]:
-                    await add_role(member, ROLE_ID[role.upper()])
+    async def on_member_join(self, member, ret=False):
+        if member.bot:
+            return
+        added_roles = []
+        db = self.get_db()
+        cur = db.cursor(MySQLdb.cursors.DictCursor)
+        if not cur.execute("SELECT * FROM users WHERE discord_id={}".format(member.id)):
+            db.close()
+            return
+        user_roles = cur.fetchone()
+        for role in member.roles[1:]:
+            await member.remove_roles(role)
+        for role in roles:
+            if user_roles[role]:
+                added_roles.append(await self.add_role(member, ROLE_ID[role.upper()]))
+        userid = user_roles['osu_id']
+        teamtag = user_roles['team_tag']
+        response = requests.get("https://osu.ppy.sh/api/get_user?k={}&u={}".format(TOKEN['OSU'], userid))
+        if response.status_code != 200:
+            db.close()
+            return
+        username = json.loads(response.content)[0]["username"]
+        await member.edit(nick="[{}] {}".format(teamtag, username))
+        db.close()
+        if ret:
+            return added_roles
 
     async def on_message(self, message):
         if message.author.bot:
@@ -152,7 +166,7 @@ class Client(discord.Client):
                 resp = self.build_embed(
                     title="The Summit Website",
                     description=SITE['WEBSITE'],
-                    thumbnail="" #TODO: change image to official one
+                    thumbnail="https://i.imgur.com/EagchHm.jpg"
                 )
                 await self.send_embed(message, resp, "site")
             elif text_message.startswith("!twitch"):
@@ -166,7 +180,7 @@ class Client(discord.Client):
             elif text_message.startswith("!youtube"):
                 resp = self.build_embed(
                     title="YouTube Channel",
-                    description=SITE['YOUTUBE'], #TODO: add youtube domain
+                    description=SITE['YOUTUBE'],
                     color=0xc4302b,
                     thumbnail="https://i.imgur.com/eyLvJEo.png"
                 )
@@ -175,10 +189,42 @@ class Client(discord.Client):
                 resp = self.build_embed(
                     title="Twitter Profile",
                     description=SITE['TWITTER'],
-                    color=0xc4302b,
-                    thumbnail="https://i.imgur.com/eyLvJEo.png" #TODO: change to twitter logo
+                    color=0x00aced,
+                    thumbnail="https://i.imgur.com/EvWLVOF.png"
                 )
                 await self.send_embed(message, resp, "twitter")
+            elif text_message.startswith("!roles"):
+                if get(message.guild.roles, id=ROLE_ID['STAFF']) in message.author.roles:
+                    if len(message.mentions) == 1:
+                        old_roles = [x.name for x in message.mentions[0].roles[1:]]
+                        new_roles = await self.on_member_join(message.mentions[0], True)
+                        if isinstance(new_roles, list):
+                            if set(old_roles) != set(new_roles):
+                                resp = self.build_embed(
+                                    title="Roles Updated Successfully",
+                                    description="Roles were updated for {}\n\n**Old Roles**\n{}\n**New Roles**\n{}".format(message.mentions[0].name, "\n".join(old_roles), "\n".join(new_roles)),
+                                    color=0x00ff00
+                                )
+                            else:
+                                resp = self.build_embed(
+                                    title="No Roles Update",
+                                    description="There are no new roles for {}.\nIf this is an error, contact Rizen".format(message.mentions[0].name),
+                                    color=0x00ff00
+                                )
+                        else:
+                            resp = self.build_embed(
+                                title="Roles Update Failure",
+                                description="There was an issue updating the roles for {}.\nContact Rizen immediately",
+                                color=0xff0000
+                            )
+                        await message.channel.send(embed=resp)
+                    else:
+                        resp = self.build_embed(
+                            title="Roles Update Failure",
+                            description="You may only include one mention in the message.\nUsage: ``!roles @user``",
+                            color=0xff0000
+                        )
+                        await message.channel.send(embed=resp)
 
 client = Client()
 client.run(TOKEN['DISCORD'])
