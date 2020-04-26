@@ -10,12 +10,13 @@ with open('secret.txt') as json_file:
     data = json.load(json_file)
     TOKEN = data['TOKEN']
     ROLE_ID = data['ID']['ROLE']
+    CHANNEL_ID = data['ID']['CHANNEL']
     SITE = data['SITE']
     DB = data['DB']
 
 roles = [x.lower() for x in list(ROLE_ID.keys())]
-channel_cooldown = {}
-COOLDOWN = 30
+cooldown = {}
+cooldown_time = 30
 
 class Client(discord.Client):
 
@@ -54,43 +55,17 @@ class Client(discord.Client):
         )
         return db
 
-    def on_cooldown(self, message, command):
+    def on_cooldown(self, message):
         try:
-            last_time = channel_cooldown[message.channel.id][command]
+            last_time = cooldown[message.author.id]
         except KeyError:
-            try:
-                channel_cooldown[message.channel.id][command] = datetime.now()
-            except KeyError:
-                channel_cooldown[message.channel.id] = {}
-                channel_cooldown[message.channel.id][command] = datetime.now()
+            cooldown[message.author.id] = datetime.now()
             return False
         last_time_since = (datetime.now() - last_time).total_seconds()
-        if last_time_since <= COOLDOWN:
-            channel_cooldown[message.channel.id][command] = datetime.now()
-            return last_time_since
+        if last_time_since <= cooldown_time:
+            return int(last_time_since)
+        cooldown[message.author.id] = datetime.now()
         return False
-
-    def build_embed(self, title="", description="", color=0xffffff, thumbnail=""):
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=color
-        )
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
-        return embed
-
-    async def send_embed(self, message, content, command):
-        seconds = self.on_cooldown(message, command)
-        if seconds:
-            resp = discord.Embed(
-                title="Command is on cooldown!",
-                description="{} seconds remain".format(int(30 - seconds)),
-                color=0xff0000
-            )
-            temp = await message.channel.send(embed=resp, delete_after=3)
-        else:
-            await message.channel.send(embed=content)
 
     async def add_role(self, member, role_id):
         role = get(member.guild.roles, id=role_id)
@@ -119,7 +94,10 @@ class Client(discord.Client):
             db.close()
             return
         username = json.loads(response.content)[0]["username"]
-        await member.edit(nick="[{}] {}".format(teamtag, username))
+        if teamtag:
+            await member.edit(nick="[{}] {}".format(teamtag, username))            
+        else:
+            await member.edit(nick="{}".format(username))
         db.close()
         if ret:
             return added_roles
@@ -128,109 +106,39 @@ class Client(discord.Client):
         if message.author.bot:
             # Ignore own messages
             return
-        if message.content.startswith("!"):
-            text_message = message.content.lower()
-            if text_message.startswith("!help"):
-                resp = self.build_embed(
-                    title="Help",
-                    description="\n".join(
-                        [
-                            "**General**",
-                            "``!live``: Check if the contest Twitch stream is live",
-                            "``!site`` / ``!website``: Displays the contest Website link",
-                            "``!twitch``: Displays the contest Twitch link",
-                            "``!youtube``: Displays the contest YouTube link",
-                            "``!twitter``: Displays the contest Twitter link"
-                        ]
-                    ),
-                    color=0xffffff,
-                )
-                await self.send_embed(message, resp, "help")
-            elif text_message.startswith("!live"):
-                twitch_html = requests.get("https://api.twitch.tv/kraken/streams/{}?client_id={}".format(SITE['TWITCH'].split("twitch.tv/")[1], TOKEN['TWITCH']))
-                twitch = json.loads(twitch_html.content)
-                try:
-                    twitch["stream"]
-                    resp = self.build_embed(
-                        title="The Summit ORG is LIVE",
-                        description=SITE['TWITCH'],
-                        color=0x6441a5,
-                        thumbnail="https://i.imgur.com/7QEx1ny.png"
-                    )
-                except KeyError:
-                    resp = self.build_embed(
-                        title="The Summit ORG is NOT Live"
-                    )
-                await self.send_embed(message, resp, "live")
-            elif text_message.startswith("!site") or text_message.startswith("!website"):
-                resp = self.build_embed(
-                    title="The Summit Website",
-                    description=SITE['WEBSITE'],
-                    thumbnail="https://i.imgur.com/EagchHm.jpg"
-                )
-                await self.send_embed(message, resp, "site")
-            elif text_message.startswith("!twitch"):
-                resp = self.build_embed(
-                    title="Twitch Channel",
-                    description=SITE['TWITCH'],
-                    color=0x6441a5,
-                    thumbnail="https://i.imgur.com/7QEx1ny.png"
-                )
-                await self.send_embed(message, resp, "twitch")
-            elif text_message.startswith("!youtube"):
-                resp = self.build_embed(
-                    title="YouTube Channel",
-                    description=SITE['YOUTUBE'],
-                    color=0xc4302b,
-                    thumbnail="https://i.imgur.com/eyLvJEo.png"
-                )
-                await self.send_embed(message, resp, "youtube")
-            elif text_message.startswith("!twitter"):
-                resp = self.build_embed(
-                    title="Twitter Profile",
-                    description=SITE['TWITTER'],
-                    color=0x00aced,
-                    thumbnail="https://i.imgur.com/EvWLVOF.png"
-                )
-                await self.send_embed(message, resp, "twitter")
-            elif text_message.startswith("!roles"):
-                if get(message.guild.roles, id=ROLE_ID['STAFF']) in message.author.roles:
-                    if len(message.mentions) == 1:
-                        old_roles = [x.name for x in message.mentions[0].roles[1:]]
-                        new_roles = await self.on_member_join(message.mentions[0], True)
-                        if isinstance(new_roles, list):
-                            if set(old_roles) != set(new_roles):
-                                resp = self.build_embed(
-                                    title="Roles Updated Successfully",
-                                    description="Roles were updated for {}\n\n**Old Roles**\n{}\n**New Roles**\n{}".format(message.mentions[0].name, "\n".join(old_roles), "\n".join(new_roles)),
-                                    color=0x00ff00
-                                )
-                            else:
-                                resp = self.build_embed(
-                                    title="No Roles Update",
-                                    description="There are no new roles for {}.\nIf this is an error, contact Rizen".format(message.mentions[0].name),
-                                    color=0x00ff00
-                                )
-                        else:
-                            resp = self.build_embed(
-                                title="Roles Update Failure",
-                                description="There is no website user associated with this user.\nIf this is an error, contact Rizen",
-                                color=0xff0000
-                            )
-                    elif len(message.mentions) > 1:
-                        resp = self.build_embed(
-                            title="Roles Update Failure",
-                            description="You may only include one mention in the message.\nUsage: ``!roles @user``",
-                            color=0xff0000
+        if message.content.startswith("!roles"):
+            cd = self.on_cooldown(message)
+            if not cd:
+                old_roles = [x.name for x in message.author.roles[1:]]
+                new_roles = await self.on_member_join(message.author, True)
+                if isinstance(new_roles, list):
+                    if set(old_roles) != set(new_roles):
+                        new = ["+" + x for x in list(set(new_roles) - set(old_roles))]
+                        old = ["-" + x for x in list(set(old_roles) - set(new_roles))]
+                        resp = discord.Embed(
+                            title="Roles Updated Successfully",
+                            description="Roles were updated for {}\n{}\n{}".format(message.author.name, "\n".join(new), "\n".join(old)),
+                            color=0x00ff00
                         )
-                    elif len(message.mentions) == 0:
-                        resp = self.build_embed(
-                            title="Roles Update Failure",
-                            description="You must include one mention in the message.\nUsage: ``!roles @user``",
-                            color=0xff0000
+                    else:
+                        resp = discord.Embed(
+                            title="No Roles Update",
+                            description="There are no new roles for {}.\nIf this is an error, contact Rizen".format(message.author.name),
+                            color=0x00ff00
                         )
-                    await message.channel.send(embed=resp)
-
+                else:
+                    resp = discord.Embed(
+                        title="Roles Update Failure",
+                        description="There is no website user associated with this user.\nIf this is an error, contact Rizen",
+                        color=0xff0000
+                    )
+            else:
+                resp = discord.Embed(
+                    title="Command Cooldown",
+                    description="You must wait for {} seconds before trying again!".format(cd),
+                    color=0xff0000
+                )
+            temp = await message.channel.send(embed=resp, delete_after=5)
 
 client = Client()
 client.run(TOKEN['DISCORD'])
